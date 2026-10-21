@@ -1,5 +1,1 @@
-layout: page
-title: "Fuzzing"
-permalink: /fuzzing
-
-TODO: Fuzzing repo link and/or write-ups go here? I guess...
+[Fuzzing assimp with afl++](https://github.com/suitengu/fuzzing_investigations/tree/main/assimp-fuzz)
