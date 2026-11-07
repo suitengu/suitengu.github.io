@@ -5,8 +5,6 @@ A harness and notes for fuzzing the assimp asset importer library.
 
 *Currently only FBX format is targeted.*
 
-*As of Oct 21, 2026 Investigation is ongoing.*
-
 ## Notes
 This build was made for a WSL2 environment, so some package versions may be unusual and some build issues may be unnecessary when compared to a more current Linux environment.
 
@@ -26,27 +24,14 @@ cp assimp/test/models-nonbsd/FBX/2013_BINARY/*.fbx inputs/
 ```
 
 ## Configuring and building assimp with and without AFL instrumentation
-(I first had to edit out all occurrences of `-Wno-deprecated-non-prototype` in the CMakeLists.txt files, because the versions of clang++ and afl-clang++ available on WSL2 do not support this option and the build fails. Do this part before copying the source over for
-an uninstrumented build)
-
-## (Optional) Keeping a separate directory for a build of assimp WITHOUT afl instrumentation (for using gdb with the test utility)
-``` bash
-cp -r assimp assimp-uninstrumented
-```
+(On WFL, I first had to edit out all occurrences of `-Wno-deprecated-non-prototype` in the CMakeLists.txt files, because the versions of clang++ and afl-clang++ available on WSL2 do not support this option and the build fails. On an up-to-date Linux distro, this is not a problem)
 
 ``` bash
 cd assimp
-cmake -DCMAKE_C_COMPILER=afl-clang-fast -DCMAKE_CXX_COMPILER=afl-clang-fast++ -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_ZLIB=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j 24
-```
-Release build is required (or to retain Debug build functionality, code that defines the `ai_assert` macro could be modified, but I found this gets too messy). The `ai_assert` macro in Debug builds causes the program to exit on the invalid inputs that afl++ generates, but the macro does nothing in release builds, which is where any interesting findings would likely apply, anyway.
-
-## Configuring and building assimp without AFL instrumentation
-I first had to edit out all occurrences of `-Wno-deprecated-non-prototype` in the CMakeLists.txt files, because the versions of clang++ and afl-clang++ available on WSL2 do not support this option and the build fails.
-``` bash
-cd assimp
-cmake -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_ZLIB=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j 24
+cmake -DCMAKE_C_COMPILER=afl-clang-fast -DCMAKE_CXX_COMPILER=afl-clang-fast++ -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_ZLIB=ON -DCMAKE_BUILD_TYPE=Release -B build-afl
+cmake --build build-afl --parallel $(nproc)
+cmake -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_ZLIB=ON -DCMAKE_BUILD_TYPE=Release -B build-test
+cmake --build build-test --parallel $(nproc)
 ```
 
 Release build is required (or to retain Debug build functionality, code that defines the `ai_assert` macro could be modified, but I found this gets too messy). The `ai_assert` macro in Debug builds causes the program to exit on the invalid inputs that afl++ generates, but the macro does nothing in release builds, which is where any interesting findings would likely apply, anyway.
@@ -59,7 +44,7 @@ make all
 afl-fuzz -i inputs/ -o findings/ -- ./harness
 ```
 
-To work around WSL2 issue with `/proc/sys/kernel/core_pattern`
+WSL2 only: issue with `/proc/sys/kernel/core_pattern`
 ``` bash
 sudo su
 echo core > /proc/sys/kernel/core_pattern
@@ -102,11 +87,11 @@ ulimit -s unlimited
 ```
 results in these cases being reported instead as "hangs" where the program receives SIGKILL instead.
 
-Investigating the cause of this, there is a recursive call to ConvertNodes within FBXCovnerter.cpp (as of this writing, line 348):
+Investigating the cause of this, there is a recursive call to ConvertNodes within FBXConverter.cpp (as of this writing, line 348):
 
 ```c++
             // recursion call - child nodes
             ConvertNodes(model->ID(), last_parent, root_node, new_abs_transform);
 ```
 
-I tried to investigate further, but stepping through the stack and running `print` on these variables only gave the `<value optimized out>` For further exploration, "test" / debugging build of the assimp library may be attempted with compiler optimization disabled so these values can be inspected, to gain further insight into why ConvertNodes ends up being called recursively so many times (the file in `findings/default/crashes` is only ~1kb in size), so it's possible the invalid data triggers an endless loop of recursive calls.
+Inspecting the connections segment of the FBX (using some console debugging), I found node 0 has a connection that also refers to node 0, resulting in a never-ending loop of ConvertNodes calls. The current assimp library is written with the reasonable assumption that all real FBX models are directed acyclic graphs, and there are some todo: items for building out the FBX node hierarchy which is likely where a proper fix could be implemented in the future. A quick fix would be to put a recursive depth limit inside FBXConverter, and raise an error when the maximum limit is reached.
